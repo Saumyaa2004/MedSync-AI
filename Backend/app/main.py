@@ -6,10 +6,6 @@ from app.db import models  # noqa
 
 app = FastAPI(title="MedSync AI", version="0.1.0")
 
-@app.on_event("startup")
-def startup():
-    Base.metadata.create_all(bind=engine)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,19 +21,10 @@ app.include_router(appointments.router)
 app.include_router(chat.router)
 app.include_router(documents.router)
 
-@app.get("/")
-def root():
-    return {"message": "MedSync AI backend is running"}
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-    @app.on_event("startup")
+@app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
-    
-    # Auto-ingest knowledge base
     try:
         import os
         from app.services.chunking import chunk_text
@@ -52,13 +39,24 @@ def startup():
                     text = f.read()
                 chunks = chunk_text(text, chunk_size=400, overlap=50)
                 ids = [f"{filename}_{i}" for i in range(len(chunks))]
-                metadatas = [{"source": filename, "chunk_index": i} for i in range(len(chunks))]
+                metadatas = [{"source": filename, "chunk_index": i}
+                             for i in range(len(chunks))]
                 try:
                     knowledge_collection.add(
                         documents=chunks, ids=ids, metadatas=metadatas
                     )
-                    print(f"✅ Ingested: {filename}")
+                    print(f"Ingested: {filename}")
                 except Exception:
-                    print(f"⏭️ Already ingested: {filename}")
+                    print(f"Already ingested: {filename}")
     except Exception as e:
-        print(f"⚠️ Knowledge base ingestion skipped: {e}")
+        print(f"Knowledge base ingestion skipped: {e}")
+
+
+@app.get("/")
+def root():
+    return {"message": "MedSync AI backend is running"}
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
