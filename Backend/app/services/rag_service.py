@@ -38,7 +38,7 @@ Question: {question}
 Answer:"""
 
     response = client.models.generate_content(
-        model="gemini-2.-flash",
+        model="gemini-3.5-flashh-lite",
         contents=prompt
     )
 
