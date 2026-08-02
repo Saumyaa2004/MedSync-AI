@@ -85,7 +85,7 @@ medications mentioned, upcoming appointments, and any alerts raised.
 Keep it professional and concise."""
 
     response = client.models.generate_content(
-        model="gemini-3.5-flashh-lite",
+        model="gemini-3.5-flash",
         contents=prompt
     )
 

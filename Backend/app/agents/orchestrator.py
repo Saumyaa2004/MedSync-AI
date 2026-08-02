@@ -34,7 +34,7 @@ Message: "{state['message']}"
 Respond with ONLY one word: rag, appointment, or general."""
 
     response = client.models.generate_content(
-        model="gemini-3.5-flashh-lite",
+        model="gemini-3.5-flash",
         contents=prompt
 
     )
@@ -69,7 +69,7 @@ Return ONLY this JSON, nothing else:
 
     try:
         response = client.models.generate_content(
-            model="gemini-3.5-flashh-lite",
+            model="gemini-3.5-flash",
             contents=prompt
         )
         import json, re
@@ -137,7 +137,7 @@ Return ONLY this JSON, nothing else:
 
 def general_node(state: GraphState) -> dict:
     response = client.models.generate_content(
-        model="gemini-3.5-flashh-lite",
+        model="gemini-3.5-flash",
         contents=f"You are a friendly healthcare assistant. Respond briefly to: {state['message']}"
     )
     return {"final_response": response.text}
