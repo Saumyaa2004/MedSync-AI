@@ -12,7 +12,10 @@ def startup():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # we'll restrict this after deployment
+    allow_origins=[
+        "http://localhost:5173",
+        "https://medsync-ai.vercel.app"  # your actual Vercel URL
+    ],  # we'll restrict this after deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
