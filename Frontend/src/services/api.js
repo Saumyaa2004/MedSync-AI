@@ -39,3 +39,16 @@ export const askDocument = (patient_id, question) =>
 // Knowledge base
 export const askKnowledge = (question) =>
   api.post("/knowledge/ask", { question });
+
+// Voice
+export const sendVoice = (patient_id, blob) => {
+  const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+  const formData = new FormData();
+  formData.append("file", blob, `speech.${ext}`);
+  return api.post(`/voice/${patient_id}`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+export const textToSpeech = (text) =>
+  api.post("/voice/tts", { text }, { responseType: "blob" });

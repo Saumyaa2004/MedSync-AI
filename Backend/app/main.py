@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import patients, conversations, knowledge, appointments, chat, documents
+from app.routes import patients, conversations, knowledge, appointments, chat, documents, voice
 from app.db.database import engine, Base
 from app.db import models  # noqa
 
@@ -20,6 +20,7 @@ app.include_router(knowledge.router)
 app.include_router(appointments.router)
 app.include_router(chat.router)
 app.include_router(documents.router)
+app.include_router(voice.router)
 
 
 @app.on_event("startup")
@@ -50,6 +51,12 @@ def startup():
                     print(f"Already ingested: {filename}")
     except Exception as e:
         print(f"Knowledge base ingestion skipped: {e}")
+    try:
+        import threading
+        from app.services.voice.tts import get_kokoro
+        threading.Thread(target=get_kokoro, daemon=True).start()
+    except Exception as e:
+        print(f"Kokoro preload skipped: {e}")
 
 
 @app.get("/")

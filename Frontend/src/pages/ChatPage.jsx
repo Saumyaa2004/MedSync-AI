@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { sendMessage, getHistory } from "../services/api";
+import { sendMessage, getHistory, sendVoice } from "../services/api";
+import useRecorder from "../hooks/useRecorder";
 
 export default function ChatPage({ patientId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(true);
   const bottomRef = useRef(null);
+  const audioRef = useRef(null);
+  const { supported: micSupported, recording, error: micError, start, stop } = useRecorder();
 
   useEffect(() => {
     getHistory(patientId).then(res => {
@@ -19,6 +23,9 @@ export default function ChatPage({ patientId }) {
   }, [patientId]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // Stop any reply audio when leaving the page
+  useEffect(() => () => audioRef.current?.pause(), []);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -37,6 +44,44 @@ export default function ChatPage({ patientId }) {
     }
   };
 
+  const playAudio = b64 => {
+    if (!b64) return;
+    audioRef.current?.pause();
+    const audio = new Audio(`data:audio/wav;base64,${b64}`);
+    audioRef.current = audio;
+    audio.play().catch(() => {}); // autoplay can be blocked; the Replay button still works
+  };
+
+  const handleMic = async () => {
+    if (loading) return;
+    if (!recording) {
+      audioRef.current?.pause(); // stop talking when the user starts talking
+      return start();
+    }
+    const blob = await stop();
+    if (!blob || blob.size < 1000) return; // ignore accidental taps
+    setLoading(true);
+    try {
+      const res = await sendVoice(patientId, blob);
+      const { transcript, response, intent, is_emergency, audio_base64, timings } = res.data;
+      setMessages(prev => [
+        ...prev,
+        { role: "user", text: transcript, voice: true },
+        { role: "assistant", text: response, intent, is_emergency, audio: audio_base64, timings },
+      ]);
+      if (autoSpeak || is_emergency) playAudio(audio_base64);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        text: typeof detail === "string" ? detail : "Voice message failed. Please try again.",
+        intent: null
+      }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleKeyDown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 
   return (
@@ -44,12 +89,22 @@ export default function ChatPage({ patientId }) {
       {/* Header */}
       <div style={{
         padding: "20px 28px", borderBottom: "1px solid rgba(255,255,255,0.06)",
-        background: "rgba(13,27,62,0.8)", backdropFilter: "blur(10px)"
+        background: "rgba(13,27,62,0.8)", backdropFilter: "blur(10px)",
+        display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px"
       }}>
-        <h2 style={{ fontSize: "17px", fontWeight: "600", color: "#e2e8f0" }}>AI Health Assistant</h2>
-        <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.35)", marginTop: "2px" }}>
-          Ask about medications, symptoms, or your health documents
-        </p>
+        <div>
+          <h2 style={{ fontSize: "17px", fontWeight: "600", color: "#e2e8f0" }}>AI Health Assistant</h2>
+          <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.35)", marginTop: "2px" }}>
+            Ask about medications, symptoms, or your health documents — type or speak
+          </p>
+        </div>
+        {micSupported && (
+          <button onClick={() => setAutoSpeak(s => !s)} title="Speak replies out loud" style={{
+            background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+            color: "#e2e8f0", borderRadius: "16px", padding: "6px 12px", fontSize: "12px",
+            cursor: "pointer", flexShrink: 0
+          }}>{autoSpeak ? "🔊 Voice on" : "🔇 Voice off"}</button>
+        )}
       </div>
 
       {/* Messages */}
@@ -89,10 +144,22 @@ export default function ChatPage({ patientId }) {
                   🚨 Emergency Alert
                 </div>
               )}
+              {msg.voice && <span style={{ marginRight: "6px", opacity: 0.7 }}>🎤</span>}
               {msg.text}
               {msg.intent && (
                 <div style={{ marginTop: "8px", fontSize: "10px", opacity: 0.4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                   {msg.intent === "rag" ? "📚 knowledge base" : msg.intent === "appointment" ? "📅 appointment" : "💬 general"}
+                </div>
+              )}
+              {msg.audio && (
+                <button onClick={() => playAudio(msg.audio)} style={{
+                  marginTop: "8px", background: "none", border: "none", color: "#81e6d9",
+                  cursor: "pointer", fontSize: "12px", padding: 0
+                }}>🔊 Replay</button>
+              )}
+              {msg.timings && (
+                <div style={{ marginTop: "4px", fontSize: "10px", opacity: 0.35 }}>
+                  STT {msg.timings.stt_ms}ms · Agent {msg.timings.agent_ms}ms · TTS {msg.timings.tts_ms}ms
                 </div>
               )}
             </div>
@@ -111,6 +178,12 @@ export default function ChatPage({ patientId }) {
         <div ref={bottomRef} />
       </div>
 
+      {micError && (
+        <div style={{ padding: "8px 28px", fontSize: "12px", color: "#fc8181", background: "rgba(197,48,48,0.08)" }}>
+          🎤 {micError}
+        </div>
+      )}
+
       {/* Input */}
       <div style={{
         padding: "16px 28px", borderTop: "1px solid rgba(255,255,255,0.06)",
@@ -119,15 +192,27 @@ export default function ChatPage({ patientId }) {
       }}>
         <textarea
           value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-          placeholder="Type your message... (Enter to send)" rows={1}
+          placeholder={recording ? "Listening… tap ■ to send" : "Type your message... (Enter to send)"}
+          rows={1} disabled={recording}
           style={{
             flex: 1, padding: "12px 18px", borderRadius: "24px",
-            border: "1px solid rgba(255,255,255,0.1)", resize: "none", fontSize: "14px",
+            border: recording ? "1px solid rgba(229,62,62,0.5)" : "1px solid rgba(255,255,255,0.1)",
+            resize: "none", fontSize: "14px",
             outline: "none", lineHeight: "1.5", background: "rgba(255,255,255,0.05)",
             color: "#e2e8f0"
           }}
         />
-        <button onClick={handleSend} disabled={loading || !input.trim()} style={{
+        {micSupported && (
+          <button onClick={handleMic} disabled={loading} title={recording ? "Stop & send" : "Speak"} style={{
+            background: recording ? "#e53e3e" : "rgba(255,255,255,0.08)",
+            color: "white", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "50%",
+            width: "44px", height: "44px", fontSize: "18px",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            flexShrink: 0, opacity: loading ? 0.5 : 1,
+            animation: recording ? "micPulse 1.2s infinite" : "none", transition: "all 0.2s"
+          }}>{recording ? "■" : "🎤"}</button>
+        )}
+        <button onClick={handleSend} disabled={loading || recording || !input.trim()} style={{
           background: loading || !input.trim()
             ? "rgba(255,255,255,0.1)"
             : "linear-gradient(135deg, #38b2ac, #2b6cb0)",

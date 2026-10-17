@@ -31,3 +31,8 @@ input, textarea, select {
   background: #2d3748;
   border-radius: 3px;
 }
+
+@keyframes micPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 62, 62, 0.6); }
+  50%      { box-shadow: 0 0 0 10px rgba(229, 62, 62, 0); }
+}

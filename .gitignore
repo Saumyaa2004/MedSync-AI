@@ -8,3 +8,4 @@ backend/venv/
 backend/.env
 backend/data/chroma_store/
 frontend/node_modules/
+**/data/kokoro/
