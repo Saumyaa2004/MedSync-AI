@@ -37,8 +37,13 @@ export default function ChatPage({ patientId }) {
       const res = await sendMessage(patientId, input);
       const { response, intent, is_emergency } = res.data;
       setMessages(prev => [...prev, { role: "assistant", text: response, intent, is_emergency }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "assistant", text: "Something went wrong. Please try again.", intent: null }]);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        text: typeof detail === "string" ? detail : "Something went wrong. Please try again.",
+        intent: null
+      }]);
     } finally {
       setLoading(false);
     }
