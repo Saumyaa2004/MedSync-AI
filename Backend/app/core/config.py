@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "whisper-large-v3-turbo"
     KOKORO_VOICE: str = "af_heart"
     KOKORO_MODEL_DIR: str = "./data/kokoro"
+    KOKORO_MODEL_FILE: str = "kokoro-v1.0.onnx"
+    KOKORO_THREADS: int = 0  # 0 = onnxruntime default
 
     class Config:
         env_file = ".env"

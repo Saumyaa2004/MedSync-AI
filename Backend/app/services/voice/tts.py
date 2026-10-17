@@ -3,12 +3,15 @@ import os
 import threading
 
 import httpx
+import onnxruntime as ort
 import soundfile as sf
 from kokoro_onnx import Kokoro
 from app.core.config import settings
 
 BASE_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-MODEL_FILE = "kokoro-v1.0.int8.onnx"   # ~90 MB quantized, fast on CPU
+# The full-precision model (~325 MB) is ~2x faster on CPU than the int8 one, whose
+# quantized ops aren't well optimized in onnxruntime (measured: RTF 1.07 vs 2.33).
+MODEL_FILE = settings.KOKORO_MODEL_FILE
 VOICES_FILE = "voices-v1.0.bin"
 
 _kokoro = None
@@ -19,7 +22,7 @@ def _download(name: str) -> str:
     path = os.path.join(settings.KOKORO_MODEL_DIR, name)
     if not os.path.exists(path):
         os.makedirs(settings.KOKORO_MODEL_DIR, exist_ok=True)
-        with httpx.stream("GET", f"{BASE_URL}/{name}", follow_redirects=True, timeout=300) as r:
+        with httpx.stream("GET", f"{BASE_URL}/{name}", follow_redirects=True, timeout=600) as r:
             r.raise_for_status()
             with open(path + ".part", "wb") as f:
                 for chunk in r.iter_bytes():
@@ -32,8 +35,14 @@ def get_kokoro() -> Kokoro:
     global _kokoro
     with _lock:
         if _kokoro is None:
-            _kokoro = Kokoro(_download(MODEL_FILE), _download(VOICES_FILE))
-            print("Kokoro TTS ready")
+            options = ort.SessionOptions()
+            if settings.KOKORO_THREADS > 0:  # cap threads on shared-CPU hosts
+                options.intra_op_num_threads = settings.KOKORO_THREADS
+            session = ort.InferenceSession(
+                _download(MODEL_FILE), options, providers=["CPUExecutionProvider"]
+            )
+            _kokoro = Kokoro.from_session(session, _download(VOICES_FILE))
+            print(f"Kokoro TTS ready ({MODEL_FILE})")
     return _kokoro
 
 

@@ -45,8 +45,10 @@ export const sendVoice = (patient_id, blob) => {
   const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
   const formData = new FormData();
   formData.append("file", blob, `speech.${ext}`);
+  // speak=false: get the text reply fast, then fetch audio separately with textToSpeech()
   return api.post(`/voice/${patient_id}`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
+    params: { speak: false },
   });
 };
 

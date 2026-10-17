@@ -39,7 +39,10 @@ def text_to_speech(payload: TTSRequest):
 
 
 @router.post("/{patient_id}", response_model=VoiceResponse)
-def voice_chat(patient_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def voice_chat(patient_id: int, file: UploadFile = File(...), speak: bool = True,
+               db: Session = Depends(get_db)):
+    """speak=false skips TTS so the client can show the text reply immediately
+    and fetch the audio separately from /voice/tts."""
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Please upload an audio file")
     audio = file.file.read()
@@ -61,10 +64,11 @@ def voice_chat(patient_id: int, file: UploadFile = File(...), db: Session = Depe
     t2 = time.perf_counter()
 
     audio_b64 = None
-    try:
-        audio_b64 = base64.b64encode(synthesize(clean_for_speech(chat["response"]))).decode()
-    except Exception as e:
-        print(f"TTS failed: {e}")                   # still return the text reply
+    if speak:
+        try:
+            audio_b64 = base64.b64encode(synthesize(clean_for_speech(chat["response"]))).decode()
+        except Exception as e:
+            print(f"TTS failed: {e}")               # still return the text reply
     t3 = time.perf_counter()
 
     return VoiceResponse(

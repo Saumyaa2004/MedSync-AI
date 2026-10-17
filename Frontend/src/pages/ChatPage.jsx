@@ -1,6 +1,28 @@
 import { useState, useEffect, useRef } from "react";
-import { sendMessage, getHistory, sendVoice } from "../services/api";
+import { sendMessage, getHistory, sendVoice, textToSpeech } from "../services/api";
 import useRecorder from "../hooks/useRecorder";
+
+// Splits a reply into short chunks (1-2 sentences) for sentence-by-sentence speech,
+// capped so very long answers aren't read out in full.
+const splitForSpeech = (text, maxChars = 700) => {
+  const sentences = text
+    .replace(/[*#_`>]/g, "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(s => s.replace(/^[-•]\s*/, "").trim())
+    .filter(s => /[a-z0-9]/i.test(s))
+    .map(s => (/[.!?:;,]$/.test(s) ? s : `${s}.`)); // bullet items get a pause
+  const chunks = [];
+  let total = 0;
+  for (const s of sentences) {
+    if (total >= maxChars) break;
+    const last = chunks[chunks.length - 1];
+    // keep the first chunk to one sentence so audio starts as soon as possible
+    if (chunks.length > 1 && last.length + s.length < 140) chunks[chunks.length - 1] = `${last} ${s}`;
+    else chunks.push(s);
+    total += s.length;
+  }
+  return chunks;
+};
 
 export default function ChatPage({ patientId }) {
   const [messages, setMessages] = useState([]);
@@ -9,6 +31,9 @@ export default function ChatPage({ patientId }) {
   const [autoSpeak, setAutoSpeak] = useState(true);
   const bottomRef = useRef(null);
   const audioRef = useRef(null);
+  const audioCacheRef = useRef(new Map()); // message id -> audio URLs, one per sentence chunk
+  const speakSessionRef = useRef(0);
+  const [voice, setVoice] = useState(null); // { id, status: "loading" | "playing" }
   const { supported: micSupported, recording, error: micError, start, stop } = useRecorder();
 
   useEffect(() => {
@@ -25,7 +50,7 @@ export default function ChatPage({ patientId }) {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   // Stop any reply audio when leaving the page
-  useEffect(() => () => audioRef.current?.pause(), []);
+  useEffect(() => () => { speakSessionRef.current += 1; audioRef.current?.pause(); }, []);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -36,31 +61,71 @@ export default function ChatPage({ patientId }) {
     try {
       const res = await sendMessage(patientId, input);
       const { response, intent, is_emergency } = res.data;
-      setMessages(prev => [...prev, { role: "assistant", text: response, intent, is_emergency }]);
+      setMessages(prev => [...prev, { id: Date.now(), role: "assistant", text: response, intent, is_emergency }]);
     } catch (err) {
       const detail = err.response?.data?.detail;
       setMessages(prev => [...prev, {
         role: "assistant",
         text: typeof detail === "string" ? detail : "Something went wrong. Please try again.",
-        intent: null
+        intent: null, error: true
       }]);
     } finally {
       setLoading(false);
     }
   };
 
-  const playAudio = b64 => {
-    if (!b64) return;
+  // Resolves when the clip ends (or can't play, e.g. autoplay blocked)
+  const playUrl = url => new Promise(resolve => {
     audioRef.current?.pause();
-    const audio = new Audio(`data:audio/wav;base64,${b64}`);
+    const audio = new Audio(url);
     audioRef.current = audio;
-    audio.play().catch(() => {}); // autoplay can be blocked; the Replay button still works
+    audio.onended = audio.onerror = () => resolve();
+    audio.play().catch(() => resolve());
+  });
+
+  const stopSpeaking = () => {
+    speakSessionRef.current += 1; // cancels any queued sentences
+    audioRef.current?.pause();
+    setVoice(null);
+  };
+
+  // Text is shown first; audio is generated sentence by sentence, so the first sentence
+  // plays while the next one is still being synthesized (lower time-to-first-audio).
+  const speak = async (id, text) => {
+    stopSpeaking();
+    const session = speakSessionRef.current;
+    const chunks = splitForSpeech(text);
+    if (!chunks.length) return;
+
+    const urls = audioCacheRef.current.get(id) || [];
+    audioCacheRef.current.set(id, urls);
+    const fetchChunk = i => urls[i]
+      ? Promise.resolve(urls[i])
+      : textToSpeech(chunks[i]).then(res => (urls[i] = URL.createObjectURL(res.data))).catch(() => null);
+
+    setVoice({ id, status: "loading" });
+    const t0 = performance.now();
+    let next = fetchChunk(0);
+    for (let i = 0; i < chunks.length; i++) {
+      const url = await next;
+      if (session !== speakSessionRef.current || !url) break;
+      if (i === 0) {
+        const tts_ms = Math.round(performance.now() - t0);
+        setMessages(prev => prev.map(m => m.id === id && m.timings && m.timings.tts_ms == null
+          ? { ...m, timings: { ...m.timings, tts_ms } } : m));
+        setVoice({ id, status: "playing" });
+      }
+      next = i + 1 < chunks.length ? fetchChunk(i + 1) : null; // prefetch while playing
+      await playUrl(url);
+      if (session !== speakSessionRef.current) return;
+    }
+    if (session === speakSessionRef.current) setVoice(null);
   };
 
   const handleMic = async () => {
     if (loading) return;
     if (!recording) {
-      audioRef.current?.pause(); // stop talking when the user starts talking
+      stopSpeaking(); // stop talking when the user starts talking
       return start();
     }
     const blob = await stop();
@@ -68,19 +133,21 @@ export default function ChatPage({ patientId }) {
     setLoading(true);
     try {
       const res = await sendVoice(patientId, blob);
-      const { transcript, response, intent, is_emergency, audio_base64, timings } = res.data;
+      const { transcript, response, intent, is_emergency, timings } = res.data;
+      const id = Date.now();
       setMessages(prev => [
         ...prev,
         { role: "user", text: transcript, voice: true },
-        { role: "assistant", text: response, intent, is_emergency, audio: audio_base64, timings },
+        { id, role: "assistant", text: response, intent, is_emergency, timings: { ...timings, tts_ms: null } },
       ]);
-      if (autoSpeak || is_emergency) playAudio(audio_base64);
+      setLoading(false);
+      if (autoSpeak || is_emergency) speak(id, response);
     } catch (err) {
       const detail = err.response?.data?.detail;
       setMessages(prev => [...prev, {
         role: "assistant",
         text: typeof detail === "string" ? detail : "Voice message failed. Please try again.",
-        intent: null
+        intent: null, error: true
       }]);
     } finally {
       setLoading(false);
@@ -156,15 +223,22 @@ export default function ChatPage({ patientId }) {
                   {msg.intent === "rag" ? "📚 knowledge base" : msg.intent === "appointment" ? "📅 appointment" : "💬 general"}
                 </div>
               )}
-              {msg.audio && (
-                <button onClick={() => playAudio(msg.audio)} style={{
-                  marginTop: "8px", background: "none", border: "none", color: "#81e6d9",
-                  cursor: "pointer", fontSize: "12px", padding: 0
-                }}>🔊 Replay</button>
-              )}
+              {msg.role === "assistant" && !msg.error && micSupported && (() => {
+                const audioId = msg.id ?? `history-${i}`;
+                const status = voice?.id === audioId ? voice.status : null;
+                return (
+                  <button onClick={() => (status ? stopSpeaking() : speak(audioId, msg.text))} style={{
+                    display: "block", marginTop: "8px", background: "none", border: "none",
+                    color: "#81e6d9", cursor: "pointer", fontSize: "12px", padding: 0
+                  }}>
+                    {status === "loading" ? "🔊 Preparing voice… (tap to cancel)"
+                      : status === "playing" ? "⏹ Stop" : "🔊 Listen"}
+                  </button>
+                );
+              })()}
               {msg.timings && (
                 <div style={{ marginTop: "4px", fontSize: "10px", opacity: 0.35 }}>
-                  STT {msg.timings.stt_ms}ms · Agent {msg.timings.agent_ms}ms · TTS {msg.timings.tts_ms}ms
+                  STT {msg.timings.stt_ms}ms · Agent {msg.timings.agent_ms}ms · first audio {msg.timings.tts_ms == null ? "…" : `${msg.timings.tts_ms}ms`}
                 </div>
               )}
             </div>
